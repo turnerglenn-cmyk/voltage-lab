@@ -1,0 +1,82 @@
+# Builds the Windows installer. Pushing a version tag (v0.1.0) also publishes it as a release;
+# running it by hand from the Actions tab only builds, and leaves the installer as a run artifact.
+name: Windows installer
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Version from tag
+        shell: bash
+        run: |
+          if [ "$GITHUB_REF_TYPE" = tag ]; then
+            echo "VERSION=${GITHUB_REF_NAME#v}" >> "$GITHUB_ENV"
+          else
+            echo "VERSION=0.0.0" >> "$GITHUB_ENV"
+          fi
+
+      - uses: msys2/setup-msys2@v2
+        with:
+          msystem: MINGW64
+          install: mingw-w64-x86_64-gcc mingw-w64-x86_64-portaudio
+
+      # No -march=native here: the installer has to run on any 64-bit PC.
+      - name: Build audio engine
+        shell: msys2 {0}
+        run: |
+          g++ -O3 -fno-math-errno -fno-trapping-math -std=c++17 -shared \
+              -o engine/synth.dll engine/synth.cpp -lportaudio
+          # PortAudio and the C++ runtime go next to synth.dll (see voltage/engine.py).
+          ldd engine/synth.dll | awk '$3 ~ /^\/mingw64\// {print $3}' | xargs -I{} cp {} engine/
+          ls -l engine
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install Python packages
+        run: python -m pip install pyqt6 pyinstaller
+
+      - name: Check the engine loads
+        run: python -c "from voltage.engine import Engine; e = Engine(); print(len(e.types), 'module types')"
+
+      - name: Bundle app
+        run: >
+          pyinstaller --noconfirm --windowed --name "Voltage Lab"
+          --icon packaging/voltage-lab.ico
+          --add-binary "engine/*.dll;engine"
+          main.py
+
+      - name: Build installer
+        shell: pwsh
+        run: |
+          $iscc = Get-ChildItem "${env:ProgramFiles(x86)}\Inno Setup*\ISCC.exe" -ErrorAction SilentlyContinue | Select-Object -First 1
+          if (-not $iscc) {
+            choco install innosetup -y --no-progress
+            $iscc = Get-ChildItem "${env:ProgramFiles(x86)}\Inno Setup*\ISCC.exe" | Select-Object -First 1
+          }
+          & $iscc.FullName "/DAppVersion=$env:VERSION" packaging\windows\installer.iss
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: VoltageLab-Setup
+          path: dist/VoltageLab-*-Setup.exe
+          if-no-files-found: error
+
+      - name: Publish release
+        if: github.ref_type == 'tag'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$GITHUB_REF_NAME" dist/VoltageLab-*-Setup.exe --title "Voltage Lab $VERSION" --generate-notes
