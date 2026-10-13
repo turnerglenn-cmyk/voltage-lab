@@ -1,0 +1,11 @@
+# Built engine (rebuilt by run.sh / the Windows workflow)
+engine/*.so
+engine/*.dll
+# Python and PyInstaller
+__pycache__/
+*.pyc
+build/
+dist/
+*.spec
+# Your own saved patches
+patches/
