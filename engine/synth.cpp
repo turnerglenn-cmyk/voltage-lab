@@ -20,7 +20,21 @@
 #include <mutex>
 #include <string>
 #include <vector>
+#if defined(__x86_64__) || defined(_M_X64) || defined(__i386__)
 #include <xmmintrin.h>
+#endif
+
+// Denormal numbers make filters and reverb tails crawl, so flush them to zero
+// on the audio thread: MXCSR FTZ+DAZ on x86, FPCR.FZ on ARM (Apple Silicon).
+static inline void flushDenormals() {
+#if defined(__x86_64__) || defined(_M_X64) || defined(__i386__)
+    _mm_setcsr(_mm_getcsr() | 0x8040);
+#elif defined(__aarch64__)
+    uint64_t fpcr;
+    __asm__ __volatile__("mrs %0, fpcr" : "=r"(fpcr));
+    __asm__ __volatile__("msr fpcr, %0" : : "r"(fpcr | (1ULL << 24)));
+#endif
+}
 
 static const int MAXV = 8;    // voices
 static const int MAXP = 10;   // params per module
@@ -689,7 +703,7 @@ static PaStream* g_stream = nullptr;
 static std::string g_err;
 
 static int audioCb(const void*, void* out, unsigned long frames, const void*, unsigned long, void* user) {
-    _mm_setcsr(_mm_getcsr() | 0x8040);   // flush denormals
+    flushDenormals();
     Engine* e = (Engine*)user;
     auto t0 = std::chrono::steady_clock::now();
     std::unique_lock<std::mutex> l(e->mx, std::try_to_lock);
@@ -832,7 +846,7 @@ void sy_all_off(Engine* e) { e->push(EV_ALLOFF, 0, 0); }
 
 // Offline / pull rendering: interleaved stereo float32.
 void sy_render(Engine* e, float* buf, int frames) {
-    _mm_setcsr(_mm_getcsr() | 0x8040);   // flush denormals
+    flushDenormals();
     std::lock_guard<std::mutex> l(e->mx);
     e->process(buf, frames);
 }

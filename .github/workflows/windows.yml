@@ -74,9 +74,16 @@ jobs:
           path: dist/VoltageLab-*-Setup.exe
           if-no-files-found: error
 
+      # The Windows and macOS builds finish in any order: whichever is first creates the release.
       - name: Publish release
         if: github.ref_type == 'tag'
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release create "$GITHUB_REF_NAME" dist/VoltageLab-*-Setup.exe --title "Voltage Lab $VERSION" --generate-notes
+        run: |
+          for attempt in 1 2 3 4 5; do
+            gh release upload "$GITHUB_REF_NAME" dist/VoltageLab-*-Setup.exe --clobber && exit 0
+            gh release create "$GITHUB_REF_NAME" dist/VoltageLab-*-Setup.exe --title "Voltage Lab $VERSION" --generate-notes && exit 0
+            sleep 15
+          done
+          exit 1

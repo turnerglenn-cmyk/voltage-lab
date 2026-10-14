@@ -21,6 +21,8 @@ def _user_dir():
     in the user's own folder when installed (Program Files is read-only)."""
     if sys.platform == "win32":
         return os.path.join(os.environ.get("APPDATA", os.path.expanduser("~")), "Voltage Lab", "patches")
+    if sys.platform == "darwin" and getattr(sys, "frozen", False):
+        return os.path.join(os.path.expanduser("~"), "Library", "Application Support", "Voltage Lab", "patches")
     if getattr(sys, "frozen", False):
         return os.path.join(os.path.expanduser("~"), ".local", "share", "voltage-lab", "patches")
     return os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "patches")
