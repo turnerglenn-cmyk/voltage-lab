@@ -1,0 +1,131 @@
+# Builds the macOS app as a .dmg, one for Apple Silicon and one for Intel Macs.
+# Pushing a version tag (v0.2.0) also attaches both to the release, next to the Windows installer;
+# running it by hand from the Actions tab only builds, and leaves the .dmg files as run artifacts.
+name: macOS app
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-15          # Apple Silicon (M1 and later)
+            label: AppleSilicon
+          - runner: macos-15-intel    # Intel Macs
+            label: Intel
+    runs-on: ${{ matrix.runner }}
+    env:
+      MACOSX_DEPLOYMENT_TARGET: "11.0"
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Version from tag
+        run: |
+          if [ "$GITHUB_REF_TYPE" = tag ]; then
+            echo "VERSION=${GITHUB_REF_NAME#v}" >> "$GITHUB_ENV"
+          else
+            echo "VERSION=0.0.0" >> "$GITHUB_ENV"
+          fi
+
+      # PortAudio is compiled in statically, so the app has no Homebrew libraries to carry around.
+      - name: Build PortAudio
+        run: |
+          PA="$RUNNER_TEMP/portaudio"
+          git clone --quiet --depth 1 --branch v19.7.0 https://github.com/PortAudio/portaudio.git "$PA"
+          cd "$PA"
+          mkdir obj
+          for f in src/common/pa_allocation.c src/common/pa_converters.c src/common/pa_cpuload.c \
+                   src/common/pa_debugprint.c src/common/pa_dither.c src/common/pa_front.c \
+                   src/common/pa_process.c src/common/pa_ringbuffer.c src/common/pa_stream.c \
+                   src/common/pa_trace.c src/os/unix/pa_unix_hostapis.c src/os/unix/pa_unix_util.c \
+                   src/hostapi/coreaudio/pa_mac_core.c src/hostapi/coreaudio/pa_mac_core_blocking.c \
+                   src/hostapi/coreaudio/pa_mac_core_utilities.c; do
+            clang -c -O2 -DNDEBUG -DPA_USE_COREAUDIO=1 -Wno-deprecated-declarations \
+                  -Iinclude -Isrc/common -Isrc/os/unix -Isrc/hostapi/coreaudio \
+                  -o "obj/$(basename "$f" .c).o" "$f"
+          done
+          ar rcs libportaudio.a obj/*.o
+          echo "PA_LIB=$PA/libportaudio.a" >> "$GITHUB_ENV"
+
+      # No -march=native here: the app has to run on any Mac of this kind.
+      - name: Build audio engine
+        run: |
+          clang++ -O3 -fno-math-errno -fno-trapping-math -std=c++17 -dynamiclib \
+              -install_name @rpath/libsynth.dylib -o engine/libsynth.dylib engine/synth.cpp "$PA_LIB" \
+              -framework CoreAudio -framework AudioToolbox -framework AudioUnit \
+              -framework CoreFoundation -framework CoreServices
+          file engine/libsynth.dylib
+          otool -L engine/libsynth.dylib
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install Python packages
+        run: python -m pip install pyqt6 pyinstaller
+
+      - name: Check the engine and MIDI load
+        run: |
+          python -c "from voltage.engine import Engine; e = Engine(); print(len(e.types), 'module types')"
+          python -c "from voltage.midi import MidiIn; m = MidiIn(None); print('CoreMIDI ready:', m.ok)"
+
+      - name: Bundle app
+        run: |
+          pyinstaller --noconfirm --windowed --name "Voltage Lab" \
+              --icon packaging/voltage-lab.icns \
+              --osx-bundle-identifier io.github.turnerglenn-cmyk.voltagelab \
+              --add-binary "engine/libsynth.dylib:engine" \
+              main.py
+          APP="dist/Voltage Lab.app"
+          plutil -replace CFBundleShortVersionString -string "$VERSION" "$APP/Contents/Info.plist"
+          plutil -replace CFBundleVersion -string "$VERSION" "$APP/Contents/Info.plist"
+          plutil -replace LSMinimumSystemVersion -string "$MACOSX_DEPLOYMENT_TARGET" "$APP/Contents/Info.plist"
+          # Editing Info.plist breaks PyInstaller's signature; sign again (ad hoc: there is no Apple Developer ID).
+          codesign --force --deep --sign - "$APP"
+          codesign --verify --deep --strict "$APP"
+
+      - name: Check the app starts
+        run: |
+          "dist/Voltage Lab.app/Contents/MacOS/Voltage Lab" > app.log 2>&1 &
+          PID=$!
+          sleep 20
+          if ! kill -0 "$PID" 2>/dev/null; then
+            echo "Voltage Lab quit during startup:"; cat app.log; exit 1
+          fi
+          kill "$PID"
+          cat app.log
+
+      - name: Make disk image
+        run: |
+          mkdir dmg
+          cp -R "dist/Voltage Lab.app" dmg/
+          ln -s /Applications dmg/Applications
+          hdiutil create -volname "Voltage Lab" -srcfolder dmg -ov -format UDZO \
+              "dist/VoltageLab-$VERSION-macOS-${{ matrix.label }}.dmg"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: VoltageLab-macOS-${{ matrix.label }}
+          path: dist/VoltageLab-*.dmg
+          if-no-files-found: error
+
+      # The Windows and macOS builds finish in any order: whichever is first creates the release.
+      - name: Publish release
+        if: github.ref_type == 'tag'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          for attempt in 1 2 3 4 5; do
+            gh release upload "$GITHUB_REF_NAME" dist/VoltageLab-*.dmg --clobber && exit 0
+            gh release create "$GITHUB_REF_NAME" dist/VoltageLab-*.dmg --title "Voltage Lab $VERSION" --generate-notes && exit 0
+            sleep 15
+          done
+          exit 1

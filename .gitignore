@@ -1,11 +1,13 @@
-# Built engine (rebuilt by run.sh / the Windows workflow)
+# Built engine (rebuilt by run.sh / the release workflows)
 engine/*.so
 engine/*.dll
+engine/*.dylib
 # Python and PyInstaller
 __pycache__/
 *.pyc
 build/
 dist/
 *.spec
+.DS_Store
 # Your own saved patches
 patches/

@@ -1,4 +1,5 @@
-"""ctypes wrapper around the C++ audio engine (engine/libsynth.so, or engine/synth.dll on Windows)."""
+"""ctypes wrapper around the C++ audio engine (engine/libsynth.so; engine/synth.dll on Windows,
+engine/libsynth.dylib on macOS)."""
 import ctypes
 import json
 import os
@@ -8,7 +9,7 @@ import sys
 import threading
 
 ENGINE_DIR = os.path.normpath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "engine"))
-LIB = os.path.join(ENGINE_DIR, "synth.dll" if sys.platform == "win32" else "libsynth.so")
+LIB = os.path.join(ENGINE_DIR, {"win32": "synth.dll", "darwin": "libsynth.dylib"}.get(sys.platform, "libsynth.so"))
 
 LIN, EXP, STEP = 0, 1, 2
 G_MASTER, G_GLIDE, G_BEND, G_LEGATO, G_BPM, G_SWING, G_GATE, G_SEQLEN = range(8)

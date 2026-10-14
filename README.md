@@ -12,6 +12,13 @@ lead, brass, string ensemble, sync lead, sample & hold, tape echo and more).
 Windows may show "Windows protected your PC" because the installer isn't code-signed:
 click **More info → Run anyway**. Saved patches go to `%APPDATA%\Voltage Lab\patches`.
 
+**macOS** (11 Big Sur or later): from the same Releases page download
+`VoltageLab-<version>-macOS-AppleSilicon.dmg` (M1 and later) or `…-macOS-Intel.dmg` (older Macs;
+Apple menu → About This Mac says which). Open it and drag **Voltage Lab** into Applications.
+The app isn't notarised by Apple, so the first launch is blocked: open it once, click **Done**, then go to
+**System Settings → Privacy & Security**, scroll down and click **Open Anyway**. After that it opens normally.
+Saved patches go to `~/Library/Application Support/Voltage Lab/patches`.
+
 **Linux (from source):**
 
 ```bash
@@ -20,6 +27,8 @@ click **More info → Run anyway**. Saved patches go to `%APPDATA%\Voltage Lab\p
 
 The first run compiles the audio engine (needs `g++` and `libportaudio2`).
 The UI needs Python 3 with PyQt6 (`sudo apt install python3-pyqt6` or `pip install pyqt6`).
+
+**macOS (from source):** `xcode-select --install`, `brew install portaudio`, `pip3 install pyqt6`, then `./run.sh`.
 
 ## Playing
 
@@ -47,7 +56,7 @@ The "960 Sequence" factory patch shows it in use.
 - Drag from an output jack (white label) to an input jack to run a cable. Several cables into one input are mixed.
 - Drag a cable off an input to move or remove it; right-click a jack to unplug everything on it.
 - Knobs: drag up/down, Shift for fine, wheel to nudge, double-click to reset.
-- Drag a panel to move a module; right-click it (or press Delete) to remove it. Ctrl+wheel zooms the rack.
+- Drag a panel to move a module; right-click it (or press Delete) to remove it. Ctrl+wheel (Cmd+wheel on a Mac) zooms the rack.
 - Oscillators and the filter follow the keyboard internally, and envelopes follow the keyboard gate
   unless you patch their GATE input, so a basic voice needs only a few cables.
 
@@ -71,22 +80,24 @@ The "960 Sequence" factory patch shows it in use.
 - `engine/synth.cpp` — real-time C++ engine: module graph, voices, DSP. Exposes a small C API.
 - `voltage/` — PyQt6 app: `rack.py` (panels, knobs, cables), `app.py` (window), `patches.py` (factory patches), `sequencer.py` (pattern panel), `midi.py`, `engine.py` (bindings).
 - `patches/` — your saved patches (JSON) when run from source.
-- `packaging/`, `.github/workflows/` — Windows installer and the GitHub build that makes it.
+- `packaging/`, `.github/workflows/` — Windows installer, macOS app icon, and the GitHub builds that make them.
 
 A new module is one struct plus one descriptor row in `synth.cpp`; the UI builds its panel from the descriptor.
 
-## Releasing a new Windows installer
+## Releasing a new version
 
-Push a version tag and GitHub builds the installer and attaches it to a release:
+Push a version tag and GitHub builds the Windows installer and the two macOS disk images
+and attaches them all to one release:
 
 ```bash
 git tag v0.1.1
 git push --tags
 ```
 
-Progress shows under the repository's **Actions** tab (about 5 minutes). The build is defined in
-`.github/workflows/windows.yml`; the installer itself in `packaging/windows/installer.iss`.
+Progress shows under the repository's **Actions** tab (about 5–10 minutes). The builds are defined in
+`.github/workflows/windows.yml` and `.github/workflows/macos.yml`; the Windows installer itself in
+`packaging/windows/installer.iss`.
 
 ## Licence
 
-GPL-3.0-or-later (see `LICENSE`). The Windows build bundles PyQt6 (GPL) and PortAudio (MIT).
+GPL-3.0-or-later (see `LICENSE`). The Windows and macOS builds bundle PyQt6 (GPL) and PortAudio (MIT).

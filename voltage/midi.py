@@ -1,7 +1,7 @@
 """MIDI keyboard input.
 
 Linux: read straight from ALSA raw MIDI devices. Windows: the built-in
-winmm MIDI API. Either way nothing extra needs installing.
+winmm MIDI API. macOS: CoreMIDI. Either way nothing extra needs installing.
 
 Devices are picked up automatically when plugged in. Handles notes,
 pitch bend, mod wheel (CC1), sustain pedal (CC64) and all-notes-off.
@@ -187,4 +187,102 @@ class WinMidiIn(threading.Thread):
     message = AlsaMidiIn.message
 
 
-MidiIn = WinMidiIn if sys.platform == "win32" else AlsaMidiIn
+class CoreMidiIn(threading.Thread):
+    """macOS: one CoreMIDI input port connected to every source (keyboards,
+    interfaces, the IAC bus). New sources are connected as they appear."""
+
+    UTF8 = 0x08000100       # kCFStringEncodingUTF8
+
+    def __init__(self, engine):
+        super().__init__(daemon=True)
+        import ctypes
+        import ctypes.util
+        import platform
+        self.ct = ctypes
+        self.engine = engine
+        self.sustain = False
+        self.sustained = set()
+        self.connected = set()      # MIDIEndpointRefs we are listening to
+        self.parsers = {}           # source -> running-status parser state
+        self.lock = threading.Lock()
+        # Packets in a MIDIPacketList are 4-byte aligned on ARM, packed on Intel.
+        self.align = platform.machine() == "arm64"
+        self.ok = False
+        try:
+            cf = ctypes.CDLL(ctypes.util.find_library("CoreFoundation"))
+            cm = self.cm = ctypes.CDLL(ctypes.util.find_library("CoreMIDI"))
+        except OSError:
+            return
+        u32, vp = ctypes.c_uint32, ctypes.c_void_p
+        cf.CFStringCreateWithCString.restype = vp
+        cf.CFStringCreateWithCString.argtypes = [vp, ctypes.c_char_p, u32]
+        read_proc = ctypes.CFUNCTYPE(None, vp, vp, vp)
+        cm.MIDIClientCreate.restype = ctypes.c_int32
+        cm.MIDIClientCreate.argtypes = [vp, vp, vp, ctypes.POINTER(u32)]
+        cm.MIDIInputPortCreate.restype = ctypes.c_int32
+        cm.MIDIInputPortCreate.argtypes = [u32, vp, read_proc, vp, ctypes.POINTER(u32)]
+        cm.MIDIGetNumberOfSources.restype = ctypes.c_size_t
+        cm.MIDIGetNumberOfSources.argtypes = []
+        cm.MIDIGetSource.restype = u32
+        cm.MIDIGetSource.argtypes = [ctypes.c_size_t]
+        cm.MIDIPortConnectSource.restype = ctypes.c_int32
+        cm.MIDIPortConnectSource.argtypes = [u32, u32, vp]
+
+        def cfstr(text):
+            return cf.CFStringCreateWithCString(None, text.encode(), self.UTF8)
+
+        self._cb = read_proc(self._on_packets)      # keep a reference so it isn't garbage collected
+        client, port = u32(), u32()
+        if cm.MIDIClientCreate(cfstr("Voltage Lab"), None, None, ctypes.byref(client)) != 0:
+            return
+        if cm.MIDIInputPortCreate(client, cfstr("Voltage Lab In"), self._cb, None, ctypes.byref(port)) != 0:
+            return
+        self.port = port.value
+        self.ok = True
+
+    @property
+    def device_count(self):
+        return len(self.connected)
+
+    def _on_packets(self, pktlist, _ref, src):
+        """Runs on CoreMIDI's own thread."""
+        ct = self.ct
+        try:
+            n = ct.c_uint32.from_address(pktlist).value
+            pkt = pktlist + 4
+            with self.lock:
+                st = self.parsers.setdefault(src or 0, {"status": 0, "data": []})
+                for _ in range(n):
+                    length = ct.c_uint16.from_address(pkt + 8).value
+                    for byte in ct.string_at(pkt + 10, length):
+                        self.feed(st, byte)
+                    pkt += 10 + length
+                    if self.align:
+                        pkt = (pkt + 3) & ~3
+        except Exception:           # never let an error escape into CoreMIDI's thread
+            pass
+
+    def scan(self):
+        cm = self.cm
+        current = {cm.MIDIGetSource(i) for i in range(cm.MIDIGetNumberOfSources())}
+        current.discard(0)
+        for src in current - self.connected:
+            if cm.MIDIPortConnectSource(self.port, src, self.ct.c_void_p(src)) == 0:
+                self.connected.add(src)
+        self.connected &= current
+
+    def run(self):
+        if not self.ok:
+            return
+        while True:
+            try:
+                self.scan()
+            except Exception:
+                pass
+            time.sleep(2)
+
+    feed = AlsaMidiIn.feed
+    message = AlsaMidiIn.message
+
+
+MidiIn = {"win32": WinMidiIn, "darwin": CoreMidiIn}.get(sys.platform, AlsaMidiIn)
